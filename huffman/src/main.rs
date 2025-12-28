@@ -82,6 +82,19 @@ fn buildCodes(node: Node, prefix: String, codebook: &mut HashMap<u8, String>) {
     };
 }
 
+fn encodeBook(cb: HashMap<u8, u32>) -> Vec<u8> {
+    let mut bytes: Vec<u8> = Vec::new();
+
+    for (x, y) in cb {
+        bytes.push(x);
+        for b in y.to_be_bytes() {
+            bytes.push(b);
+        }
+    }
+
+    return bytes;
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     println!("{:?}", args);
@@ -93,41 +106,80 @@ fn main() {
     let fComp: Vec<&str> = fname.split('.').collect();
 
     if *fComp.last().unwrap() == "huf" {
+        // ---------------------------------------------------------------------
         println!("decode");
+
+        // raw bytes
+        let bytes: Vec<u8> = fs::read(&args[1]).expect("error opening file");
+        println!("{:?}", bytes);
+
+        // freq table size
+        let arr: [u8; 4] = bytes[2..6].try_into().expect("Size does not match");
+        let freq_length = u32::from_be_bytes(arr);
+        println!("length: {:?}", freq_length);
+
+        // freq table
+        let freq_bytes: Vec<u8> = bytes[6..((freq_length + 6) as usize)].to_vec();
+        println!("freq_bytes: {:?}", freq_bytes);
+
+        // data
+        let data: Vec<u8> = bytes[((freq_length + 6) as usize)..].to_vec();
+        println!("data: {:?}", data);
+
+        // freq_bytes -> HashMap
+        // rebuild tree
+        // rebuild codebook
+        // rebuild data
     } else {
+        // ---------------------------------------------------------------------
         println!("encode");
+
+        let data: Vec<u8> = fs::read(&args[1]).expect("error opening file");
+        println!("{:?}", data);
+
+        let mut freq: HashMap<u8, u32> = HashMap::new();
+
+        for x in data.clone() {
+            match freq.get(&x) {
+                Some(&i) => freq.insert(x, i + 1),
+                _ => freq.insert(x, 1),
+            };
+        }
+
+        println!("Freq: {:?}", freq);
+        let mut tree: Vec<Node> = Vec::new();
+        buildTree(&mut tree, &freq);
+        let freqBytes: Vec<u8> = encodeBook(freq);
+        println!("\ncbBytes: {:?}", freqBytes);
+
+        println!("\ntree: {:?}", tree);
+        let mut codebook: HashMap<u8, String> = HashMap::new();
+        let prefix: String = "".to_string();
+        buildCodes(tree[0].clone(), prefix, &mut codebook);
+
+        println!("\ncodebook: {:?}", codebook);
+        let mut msg: Vec<u8> = Vec::new();
+        msg.append(&mut "HF".to_string().into_bytes()); // 2 Byte Header
+
+        let length = (freqBytes.len() as u32).to_be_bytes(); // 4 Byte Freq Size
+        for b in length {
+            msg.push(b);
+        }
+
+        // x Byte Freq Table
+        for b in freqBytes {
+            msg.push(b);
+        }
+
+        for byte in data.clone() {
+            msg.push(u8::from_str_radix(codebook.get(&byte).unwrap(), 2).unwrap());
+        }
+        println!("msg: {:?}", msg);
+
+        let newFile = fComp[0].to_owned() + ".huf";
+
+        let _ = fs::write(&newFile, msg);
     }
-
-    let data: Vec<u8> = fs::read(&args[1]).expect("error opening file");
-    println!("{:?}", data);
-
-    let mut freq: HashMap<u8, u32> = HashMap::new();
-
-    for x in data.clone() {
-        match freq.get(&x) {
-            Some(&i) => freq.insert(x, i + 1),
-            _ => freq.insert(x, 1),
-        };
-    }
-
-    println!("Freq: {:?}", freq);
-    let mut tree: Vec<Node> = Vec::new();
-    buildTree(&mut tree, &freq);
-
-    println!("\ntree: {:?}", tree);
-    let mut codebook: HashMap<u8, String> = HashMap::new();
-    let mut prefix: String = "".to_string();
-    buildCodes(tree[0].clone(), prefix, &mut codebook);
-
-    println!("\ncodebook: {:?}", codebook);
-
-    let mut msg: Vec<u8> = Vec::new();
-    for byte in data.clone() {
-        msg.push(u8::from_str_radix(codebook.get(&byte).unwrap(), 2).unwrap());
-    }
-    println!("msg: {:?}", msg);
-
-    fs::write(fComp[0].clone().to_owned() + ".huf", msg);
 
     return ();
 }
