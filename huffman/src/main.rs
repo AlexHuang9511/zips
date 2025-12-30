@@ -1,4 +1,6 @@
-use std::{cmp::Ordering, collections::HashMap, env, fs};
+use std::{cmp::Ordering, collections::HashMap, env, fs, iter, vec};
+
+const HEADER_FIXED: usize = 11;
 
 #[derive(Debug, Clone)]
 struct Node {
@@ -45,7 +47,6 @@ fn buildTree(tree: &mut Vec<Node>, freq: &HashMap<u8, u32>) {
         });
     }
     tree.sort();
-    println!("list: {:?}\n", tree);
 
     while tree.len() > 1 {
         let l = tree.remove(0).clone();
@@ -58,7 +59,6 @@ fn buildTree(tree: &mut Vec<Node>, freq: &HashMap<u8, u32>) {
         });
         tree.sort();
     }
-    println!("list: {:?}", tree);
 }
 
 fn buildCodes(node: Node, prefix: String, codebook: &mut HashMap<u8, String>) {
@@ -82,7 +82,7 @@ fn buildCodes(node: Node, prefix: String, codebook: &mut HashMap<u8, String>) {
     };
 }
 
-fn encodeBook(cb: HashMap<u8, u32>) -> Vec<u8> {
+fn encodeFreq(cb: HashMap<u8, u32>) -> Vec<u8> {
     let mut bytes: Vec<u8> = Vec::new();
 
     for (x, y) in cb {
@@ -95,9 +95,30 @@ fn encodeBook(cb: HashMap<u8, u32>) -> Vec<u8> {
     return bytes;
 }
 
+fn decode(tree: &Vec<Node>, data: String) -> Vec<u8> {
+    let mut result: Vec<u8> = Vec::new();
+    let mut node: &Node = &tree[0];
+
+    println!("data size: {}", data.len());
+
+    for bit in data.chars() {
+        node = match bit {
+            '0' => node.left.as_deref().expect("Left node does not exist"),
+            '1' => node.right.as_deref().expect("Right node does not exist"),
+            x => panic!("Not 0 or 1 dectected: \'{:?}\'", x),
+        };
+
+        if let Some(b) = node.byte {
+            result.push(b);
+            node = &tree[0];
+        }
+    }
+
+    return result;
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
-    println!("{:?}", args);
     if args.len() != 2 {
         println!("Usage: huf {{file}}");
         return ();
@@ -105,37 +126,85 @@ fn main() {
     let fname = args[1].clone();
     let fComp: Vec<&str> = fname.split('.').collect();
 
-    if *fComp.last().unwrap() == "huf" {
+    if **&fComp.last().unwrap() == "huf" {
         // ---------------------------------------------------------------------
-        println!("decode");
+        println!("Decode");
 
         // raw bytes
         let bytes: Vec<u8> = fs::read(&args[1]).expect("error opening file");
-        println!("{:?}", bytes);
+
+        // signature
+        let sig: Vec<u8> = bytes[..2].to_vec();
+        if sig != [72, 70].to_vec() {
+            println!("Not a .huf file");
+            return;
+        }
+
+        // padding amount
+        let padding_amt: u8 = bytes[2];
 
         // freq table size
-        let arr: [u8; 4] = bytes[2..6].try_into().expect("Size does not match");
-        let freq_length = u32::from_be_bytes(arr);
-        println!("length: {:?}", freq_length);
+        let arr: [u8; 8] = bytes[3..HEADER_FIXED]
+            .try_into()
+            .expect("Size does not match");
+        let freq_length = u64::from_be_bytes(arr);
 
         // freq table
-        let freq_bytes: Vec<u8> = bytes[6..((freq_length + 6) as usize)].to_vec();
-        println!("freq_bytes: {:?}", freq_bytes);
+        let freq_bytes: Vec<u8> =
+            bytes[HEADER_FIXED..((freq_length + HEADER_FIXED as u64) as usize)].to_vec();
 
         // data
-        let data: Vec<u8> = bytes[((freq_length + 6) as usize)..].to_vec();
-        println!("data: {:?}", data);
+        let data: Vec<u8> = bytes[((freq_length + HEADER_FIXED as u64) as usize)..].to_vec();
 
         // freq_bytes -> HashMap
+        let mut freq: HashMap<u8, u32> = HashMap::new();
+        let mut i = 0;
+        while i < freq_bytes.len() {
+            let arr: [u8; 4] = freq_bytes[i + 1..i + 5]
+                .try_into()
+                .expect("Freq bytes mismatch");
+            let code = u32::from_be_bytes(arr);
+            freq.insert(freq_bytes[i], code);
+            i += 5;
+        }
+
         // rebuild tree
-        // rebuild codebook
+        let mut tree: Vec<Node> = Vec::new();
+        buildTree(&mut tree, &freq);
+        println!("build tree done");
+
+        let mut codebook: HashMap<u8, String> = HashMap::new();
+        let prefix: String = "".to_string();
+        buildCodes(tree[0].clone(), prefix, &mut codebook);
+        println!("build codes done");
+
         // rebuild data
+        println!("rebuilding data");
+
+        println!("data len: {:?}", data.len());
+        let mut bits: String = "".to_string();
+        for b in &data {
+            let bit = format!("{:08b}", b);
+            bits.push_str(&bit);
+        }
+        bits = bits[..bits.len() - padding_amt as usize].to_string();
+
+        println!("decoding");
+        let msg: Vec<u8> = decode(&tree, bits);
+
+        let mut newFile: String = "".to_string();
+        for n in &fComp[..fComp.len() - 2] {
+            newFile.push_str(n);
+            newFile.push('.');
+        }
+        newFile.push_str(&fComp[fComp.len() - 2]);
+
+        let _ = fs::write(&newFile, msg);
     } else {
         // ---------------------------------------------------------------------
-        println!("encode");
+        println!("Encode");
 
         let data: Vec<u8> = fs::read(&args[1]).expect("error opening file");
-        println!("{:?}", data);
 
         let mut freq: HashMap<u8, u32> = HashMap::new();
 
@@ -146,22 +215,39 @@ fn main() {
             };
         }
 
-        println!("Freq: {:?}", freq);
         let mut tree: Vec<Node> = Vec::new();
         buildTree(&mut tree, &freq);
-        let freqBytes: Vec<u8> = encodeBook(freq);
-        println!("\ncbBytes: {:?}", freqBytes);
+        let freqBytes: Vec<u8> = encodeFreq(freq);
 
-        println!("\ntree: {:?}", tree);
         let mut codebook: HashMap<u8, String> = HashMap::new();
         let prefix: String = "".to_string();
         buildCodes(tree[0].clone(), prefix, &mut codebook);
 
-        println!("\ncodebook: {:?}", codebook);
         let mut msg: Vec<u8> = Vec::new();
-        msg.append(&mut "HF".to_string().into_bytes()); // 2 Byte Header
 
-        let length = (freqBytes.len() as u32).to_be_bytes(); // 4 Byte Freq Size
+        let mut temp: String = "".to_string();
+        let mut data_count = 0;
+        for byte in data.clone() {
+            temp.push_str(codebook.get(&byte).unwrap());
+            data_count += 1;
+        }
+
+        let padding = (8 - temp.len() % 8) % 8;
+
+        let mut pad = "".to_string();
+        for _ in 0..padding {
+            pad.push('0');
+        }
+        temp.push_str(&pad);
+
+        // 2 Byte signature
+        msg.append(&mut "HF".to_string().into_bytes());
+
+        // 1 Byte padding amount
+        msg.push(padding as u8);
+
+        // 8 Byte Freq Size
+        let length = (freqBytes.len() as u64).to_be_bytes();
         for b in length {
             msg.push(b);
         }
@@ -171,12 +257,13 @@ fn main() {
             msg.push(b);
         }
 
-        for byte in data.clone() {
-            msg.push(u8::from_str_radix(codebook.get(&byte).unwrap(), 2).unwrap());
+        // padded data
+        for i in (0..temp.len()).step_by(8) {
+            let n = &temp[i..i + 8];
+            msg.push(u8::from_str_radix(n, 2).unwrap());
         }
-        println!("msg: {:?}", msg);
 
-        let newFile = fComp[0].to_owned() + ".huf";
+        let newFile = fname.to_owned() + ".huf";
 
         let _ = fs::write(&newFile, msg);
     }
